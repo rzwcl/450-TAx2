@@ -326,7 +326,7 @@ def frame_to_text(frame: DecodedFrame, sample_rate: int = TARGET_RATE, source_la
         f"原始 40 字节 TAX 载荷：{frame.payload.hex(' ').upper()}",
     ]
     lines.extend(f"{key}：{value}" for key, value in fields.items())
-    lines.append("注意：公里标、站数、信号机编号等字段按当前证据等级显示候选，不因 CRC 通过而自动视为业务语义已确认。")
+    lines.append("注意：CRC 只验证帧内容校验一致；0x08–0x0A、0x1A–0x1B、0x21–0x24 仍是未解字段，按原始偏移显示，不代表站数、物理车站号、区段号或信号机编号。")
     return "\n".join(lines)
 
 
