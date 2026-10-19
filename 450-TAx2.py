@@ -6,14 +6,14 @@
 - 从 Windows 声音输入设备读取音频（可选择虚拟音频线，例如 VAC/CABLE/Line 1）。
 - 将输入 PCM 送入用户已有的 SoX 进程，实时下混并重采样为 48 kHz、单声道、16-bit PCM。
 - 对 FFSK 1200/1800 Hz 进行判位，搜索 31-bit sync，BCH(26,16) 纠错，CRC-16/XMODEM 验证。
-- 展示 40 字节 TAX 载荷、已知字段及公里标/站数/信号机编号候选。
+- 展示 40 字节 TAX 载荷、已确认的车次/车型/机车号/速度/公里标/编组字段；未解字段只显示偏移和原始值，不把它们强行命名为站号、区段号、站数或信号机编号。
 - 可选择 WAV 离线测试，同样经 SoX 统一到 48 kHz 单声道后解析。
 
 依赖：Python 3.9+，numpy，sounddevice（tkinter 一般随 Windows Python 安装）。
 安装依赖：py -m pip install numpy sounddevice
 SoX 请在界面中选择 sox.exe 路径，或提前放入 PATH。
 
-字段说明：只有通过 BCH 与 CRC 的帧才展示；未验证的业务含义会明确标注为“候选”。
+字段说明：只有通过 BCH 与 CRC 的帧才展示。现场已核实的车型、机车号、速度、公里标、总重、计长、辆数按正式字段输出；0x08–0x0A、0x1A–0x1B、0x21–0x24 只输出原始值，不擅自解释业务语义。
 """
 
 from __future__ import annotations
@@ -277,39 +277,41 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
     mileage_raw = payload[0x16:0x19]
     mileage_raw24 = int.from_bytes(mileage_raw, "little")
     mileage_flags = mileage_raw24 >> 22
-    # 样本 33 42 42 与 0A 42 02 相差 0x400029；清除最高两位后只差 41 m。
-    # 2026-10-11 两个录音的 6A 37 03 与 6D 37 43 清除最高两位后也仅差 3 m。
-    # 因此暂将最高两位作为旗标候选、低 22 位作为米数；旗标具体含义未知。
+    # 现场与多份通过 CRC 的录音支持：低 22 位为米制公里标，高两位是独立旗标位。
+    # 例：0A 42 02 -> K147+978，33 42 42 -> K148+019；
+    # 6A 37 03 -> K210+794，6D 37 43 -> K210+797。
+    # 最高两位的业务语义仍未知，不能并入公里数。
     mileage_m = mileage_raw24 & 0x3FFFFF
     low22_text = f"K{mileage_m // 1000}+{mileage_m % 1000:03d}"
     if mileage_raw24 == 9_999_999:
         mileage_text = "无有效公里标（原始值 9,999,999 / 字节 7F 96 98；低位换算结果不作为实际位置）"
     else:
-        mileage_text = f"{low22_text}（低 22 位按米换算候选）"
+        mileage_text = f"{low22_text}（低 22 位米数）"
         if mileage_flags:
-            mileage_text += f"；最高两位旗标候选={mileage_flags:02b}（语义未知）"
+            mileage_text += f"；最高两位旗标={mileage_flags:02b}（含义未解）"
         else:
-            mileage_text += "；最高两位当前为 00"
+            mileage_text += "；最高两位=00"
 
     speed = payload[0x19]
     other_1a_1b = int.from_bytes(payload[0x1A:0x1C], "little")
     weight = int.from_bytes(payload[0x1C:0x1E], "little")
     length_tenths = int.from_bytes(payload[0x1E:0x20], "little")
     cars = payload[0x20]
-    station = payload[0x21]
-    section = payload[0x23]
-    section_sub = payload[0x24]
+    # 0x21 在 CRRD 公共锚点中显示为车站号，但本项目同一录音点的现场
+    # 样本中分别出现 25、28、29，不能解释为固定的物理车站编号。
+    # 0x23/0x24 在 CRRD 锚点中显示为区段号/子值，但本项目样本普遍为 0E 0E，
+    # 且尚无独立已知值佐证，暂只显示原始字节。
     driver = int.from_bytes(payload[0x25:0x28], "little")
 
     return {
         "车次": f"{train_no}；前缀字节 0x{prefix_byte:02X} {prefix_display}；车次数字原始字节 {payload[0x0F:0x12].hex(' ').upper()} = {train_digits}",
         "机车型号/机车号": f"{model_name}，型号代码 {model_code}（原始 {payload[0x12:0x14].hex(' ').upper()}）；机车号数值 {loco_no}（原始 {payload[0x14:0x16].hex(' ').upper()}，显示补零规则未强行确定）",
         "速度": f"{speed} km/h（载荷偏移 0x19，原始 {payload[0x19]:02X}）",
-        "公里标候选": f"{mileage_text}；原始字节 {mileage_raw.hex(' ').upper()}，全 24 位值 {mileage_raw24}，低 22 位米数候选 {mileage_m}，高 2 位值 {mileage_flags:02b}",
-        "站数/计数字节候选": f"0x08={payload[0x08]}，0x09={payload[0x09]}；0x0A 状态候选=0x{payload[0x0A]:02X}。当前样本中前两字节常相同，暂不能判定各自语义。",
-        "信号机编号候选": f"0x1A–0x1B 原始 {payload[0x1A:0x1C].hex(' ').upper()}，小端数值 {other_1a_1b}；仅候选，尚无现场编号对照。",
+        "公里标": f"{mileage_text}；原始字节 {mileage_raw.hex(' ').upper()}，全 24 位值 {mileage_raw24}，低 22 位米数 {mileage_m}，高 2 位值 {mileage_flags:02b}",
+        "未解字段 0x08–0x0A": f"原始值：0x08={payload[0x08]:02X}，0x09={payload[0x09]:02X}，0x0A={payload[0x0A]:02X}；暂不能认定为剩余站数、总站数或事件类型。",
+        "未解字段 0x1A–0x1B": f"原始字节 {payload[0x1A:0x1C].hex(' ').upper()}；按小端数值为 {other_1a_1b}，尚不能确认是信号机编号。",
         "总重/计长/辆数": f"总重 {weight} t（{payload[0x1C:0x1E].hex(' ').upper()}）；计长 {length_tenths / 10:.1f}（{payload[0x1E:0x20].hex(' ').upper()}）；辆数 {cars}（{payload[0x20]:02X}）",
-        "车站/区段/司机号候选": f"车站号候选 {station}；区段值候选 {section}/{section_sub}；司机号候选 {driver}",
+        "未解字段 0x21–0x24／司机号": f"0x21={payload[0x21]:02X}、0x22={payload[0x22]:02X}、0x23–0x24={payload[0x23:0x25].hex(' ').upper()}（业务含义未确认）；司机号 {driver}",
     }
 
 
