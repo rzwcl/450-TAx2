@@ -283,10 +283,7 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
     mileage_m = mileage_raw24 & 0x3FFFFF
     low22_text = f"K{mileage_m // 1000}+{mileage_m % 1000:03d}"
     if mileage_raw24 == 9_999_999:
-        mileage_text = (
-            "原始 24 位数值恰为 9,999,999，疑似无效/未知里程哨兵；"
-            f"若只取低 22 位则为 {low22_text}，但不作为有效公里标。"
-        )
+        mileage_text = "无有效公里标（原始值 9,999,999 / 字节 7F 96 98；低位换算结果不作为实际位置）"
     else:
         mileage_text = f"{low22_text}（低 22 位按米换算候选）"
         if mileage_flags:
