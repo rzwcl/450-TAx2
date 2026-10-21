@@ -857,7 +857,7 @@ class FfskGui:
                 self.gui_events.put(("log", f"[{os.path.basename(path)}] 未找到同时通过 BCH 和 CRC 的帧。检查音频源、音量、FFSK 音调或 SoX 路径。"))
             else:
                 for frame in found:
-                    self.gui_events.put(("log", frame_to_text(frame, source_label=os.path.basename(path))))
+                    self.gui_events.put(("frame", frame_to_text(frame, source_label=os.path.basename(path))))
                 self.gui_events.put(("log", f"离线分析完成：共找到 {len(found)} 份 BCH/CRC 均通过的独立帧。重复采样相位命中已去重。"))
             self.gui_events.put(("status", f"离线分析完成：{os.path.basename(path)}；有效帧 {len(found)} 份。"))
         except Exception as exc:
