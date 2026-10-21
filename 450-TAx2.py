@@ -671,33 +671,44 @@ class FfskGui:
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop_live, state="disabled")
         self.stop_button.pack(side="left", padx=(6, 0))
         ttk.Button(buttons, text="选择 WAV 离线分析…", command=self.analyze_wav).pack(side="left", padx=(18, 0))
-        ttk.Button(buttons, text="清空记录", command=self.clear_log).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="清空内容和日志", command=self.clear_log).pack(side="left", padx=(6, 0))
 
         status_frame = ttk.Frame(outer)
         status_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 7))
         ttk.Label(status_frame, text="状态：").pack(side="left")
         ttk.Label(status_frame, textvariable=self.status_var).pack(side="left", fill="x", expand=True)
 
-        ttk.Label(outer, text="有效帧与字段候选（只有 BCH / CRC 校验通过才列出）").grid(row=6, column=0, columnspan=3, sticky="w")
-        text_frame = ttk.Frame(outer)
-        text_frame.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
-        self.log = tk.Text(text_frame, wrap="word", font=("Consolas", 10), undo=False)
-        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=self.log.yview)
-        self.log.configure(yscrollcommand=scrollbar.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.tabs = ttk.Notebook(outer)
+        self.tabs.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
+
+        content_frame = ttk.Frame(self.tabs)
+        log_frame = ttk.Frame(self.tabs)
+        self.tabs.add(content_frame, text="内容")
+        self.tabs.add(log_frame, text="日志")
+
+        self.content = tk.Text(content_frame, wrap="word", font=("Microsoft YaHei UI", 11), undo=False)
+        content_scroll = ttk.Scrollbar(content_frame, orient="vertical", command=self.content.yview)
+        self.content.configure(yscrollcommand=content_scroll.set)
+        self.content.pack(side="left", fill="both", expand=True)
+        content_scroll.pack(side="right", fill="y")
+
+        self.log = tk.Text(log_frame, wrap="none", font=("Consolas", 9), undo=False)
+        log_scroll_y = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
+        log_scroll_x = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log.xview)
+        self.log.configure(yscrollcommand=log_scroll_y.set, xscrollcommand=log_scroll_x.set)
+        self.log.pack(side="top", fill="both", expand=True)
+        log_scroll_y.pack(side="right", fill="y")
+        log_scroll_x.pack(side="bottom", fill="x")
 
         outer.columnconfigure(0, weight=1)
         outer.columnconfigure(1, weight=0)
         outer.columnconfigure(2, weight=0)
-        outer.rowconfigure(7, weight=1)
-        self.log.insert("end", "使用提示：\n")
-        self.log.insert("end", "1. 先启动你播放/接收音频的软件，并把其输出路由到虚拟音频线。\n")
-        self.log.insert("end", "2. 在输入设备列表选择虚拟线的录音端（例如 CABLE Output / Line 1），不是扬声器输出端。\n")
-        self.log.insert("end", "3. SoX 会把输入 PCM 实时重采样/下混到 48000 Hz、单声道；程序按 1200 baud 解析。\n")
-        self.log.insert("end", "4. 字段按 TB/T 3325-2013 表 8：0x08 为 TDCS 信号机事件，0x0A 为本/补与客/货标志，0x19–0x1B 为三字节速度。\n")
-        self.log.insert("end", "5. 0x21–0x22 为车站号及扩充字节，0x23–0x24 为区段号/交路号及实际交路号；司机号含扩充字节。预留位不强行解释。\n\n")
-        self.log.configure(state="normal")
+        outer.rowconfigure(6, weight=1)
+        self.content.insert("end", "就绪。有效帧会在“内容”页显示简明字段；完整40字节载荷、CRC/BCH、原始字段和未解细节放在“日志”页。\\n\\n")
+        self.content.insert("end", "实时接收：选择虚拟音频输入设备并点击“开始实时解码”；离线分析：点击“选择 WAV 离线分析”。\\n")
+        self.log.insert("end", "程序日志\\n")
+        self.log.insert("end", "只有同步、BCH、头部、填充字节与 CRC 校验均通过的帧才作为有效帧输出。\\n")
+        self.log.insert("end", "字段依据：TB/T 3325—2013 表 7、表 8。尚未确认的字段会保留原始值，不强行赋予业务含义。\\n\\n")
 
     def refresh_devices(self):
         if sd is None:
@@ -854,6 +865,45 @@ class FfskGui:
 
     def clear_log(self):
         self.log.delete("1.0", "end")
+        self.content.delete("1.0", "end")
+        self.content.insert("end", "记录已清空。\\n")
+
+    def _content_frame(self, detail: str):
+        """将完整诊断记录提炼为内容页摘要；原始信息仍完整保存在日志页。"""
+        fields = {}
+        for line in detail.splitlines():
+            if "：" in line:
+                key, value = line.split("：", 1)
+                fields[key.strip()] = value.strip()
+
+        def value_for(prefix):
+            for key, value in fields.items():
+                if key.startswith(prefix):
+                    return value
+            return "未提供"
+
+        lines = detail.splitlines()
+        heading = next((x for x in lines if "检出有效帧" in x), "有效帧")
+        crc = next((x for x in lines if x.startswith("CRC-16")), "")
+        raw = next((x for x in lines if x.startswith("原始 40 字节")), "")
+        summary = [
+            heading,
+            value_for("车次"),
+            value_for("机车型号/机车号"),
+            value_for("信号机事件"),
+            value_for("信号机种类"),
+            value_for("本补与客货标志"),
+            value_for("公里标"),
+            value_for("速度"),
+            value_for("总重/计长/辆数"),
+            value_for("车站与交路字段"),
+            value_for("司机号"),
+            crc,
+            raw,
+            "-" * 64,
+        ]
+        self.content.insert("end", "\\n".join(x for x in summary if x) + "\\n")
+        self.content.see("end")
 
     def _log(self, text: str):
         self.log.insert("end", text + "\n")
@@ -877,13 +927,18 @@ class FfskGui:
         self.root.after(100, self._poll_events)
 
     def _handle_event(self, kind: str, msg: str):
-        if kind == "frame" or kind == "log":
+        if kind == "frame":
+            self._log(msg)
+            self._content_frame(msg)
+        elif kind == "log":
             self._log(msg)
         elif kind == "status":
             self.status_var.set(msg)
         elif kind == "error":
             self.status_var.set(msg)
             self._log("错误：" + msg)
+            self.content.insert("end", "错误：" + msg + "\\n")
+            self.content.see("end")
         elif kind == "done":
             self.status_var.set(msg)
             # 等待读取线程把停止前已进入 SoX 的音频处理完，再允许重新启动。
