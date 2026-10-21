@@ -257,63 +257,159 @@ def scan_frames(samples: np.ndarray, absolute_sample_start: int = 0, allow_one_s
 
 
 def decode_payload_fields(payload: bytes) -> dict[str, str]:
+    """按 TB/T 3325-2013 表 8 解读 40 字节无线车次号信息区。"""
     if len(payload) != 40:
         return {"载荷长度": f"错误：{len(payload)} 字节"}
 
-    prefix_byte = payload[0x0E]
-    prefix = chr(prefix_byte) if 0x20 <= prefix_byte <= 0x7E else f"\\x{prefix_byte:02X}"
+    # 表 8：40 字节从地址字段的后 4 字节开始。
+    # 完整 5 字节地址为 00 + payload[0:4]；随后是控制字、命令字、
+    # 信息功能码、信息长度，再进入实际列车运行数据。
+    addr_tail = payload[0x00:0x04]
+    control = payload[0x04]
+    command = payload[0x05]
+    function_code = payload[0x06]
+    info_length = payload[0x07]
+
+    # 表 8 序号 10：TDCS 信号机类别，不是 0x22。
+    event_code = payload[0x08]
+    event_names = {
+        0: "始发车",
+        1: "编组站",
+        2: "出站",
+        3: "进站",
+        4: "通过",
+        5: "预告",
+        6: "容许",
+    }
+    event_name = event_names.get(event_code, "标准表 8 未定义")
+
+    # 表 8 序号 11、12：信号机种类；本/补、客/货标志。
+    signal_type = payload[0x09]
+    class_flags = payload[0x0A]
+    passenger_freight = "客" if (class_flags & 0x01) else "货"
+    main_helper = "补机" if (class_flags & 0x02) else "本务机"
+    flags_other = class_flags & 0xFC
+
+    # 表 8 序号 13：4 字节车次种类标识符；序号 14：24 位车次数字部分。
+    train_type_id = payload[0x0B:0x0F]
+    train_type_text = train_type_id.decode("ascii", errors="replace")
+    last_id_byte = train_type_id[-1]
+    if 0x20 <= last_id_byte <= 0x7E:
+        prefix = chr(last_id_byte)
+    else:
+        prefix = f"\\x{last_id_byte:02X}"
     if prefix == " ":
-        prefix_display = "（无字母前缀）"
+        prefix_display = "（末字节为空格）"
+    elif len(prefix) == 1 and prefix.isprintable():
+        prefix_display = prefix
     else:
         prefix_display = prefix
-    train_digits = int.from_bytes(payload[0x0F:0x12], "little", signed=False)
+    train_digits_raw = payload[0x0F:0x12]
+    train_digits = int.from_bytes(train_digits_raw, "little", signed=False)
     train_no = f"{prefix}{train_digits}" if prefix != " " else str(train_digits)
 
-    model_code = int.from_bytes(payload[0x12:0x14], "little")
+    # 表 8 序号 15、16：车型代码与型号扩充字节，是两个独立字段。
+    model_code = payload[0x12]
+    model_ext = payload[0x13]
     models = {237: "HXD1C（按现有型号对照）", 242: "HXD3D（CRRD 样本已知）"}
     model_name = models.get(model_code, "型号名未知")
-    loco_no = int.from_bytes(payload[0x14:0x16], "little")
+    loco_no_raw = payload[0x14:0x16]
+    loco_no = int.from_bytes(loco_no_raw, "little")
 
+    # 表 7 第 26 项：bit23=正/负号，bit22=公里标递减/递增，
+    # bit21..bit0 为公里标绝对值（米）。标准第 9.3.4 节也说明 FFFFFF
+    # 的公里标经处理后用 9,999,999 表示；该样本码型在本项目中为 7F 96 98。
     mileage_raw = payload[0x16:0x19]
     mileage_raw24 = int.from_bytes(mileage_raw, "little")
-    mileage_flags = mileage_raw24 >> 22
-    # 现场与多份通过 CRC 的录音支持：低 22 位为米制公里标，高两位是独立旗标位。
-    # 例：0A 42 02 -> K147+978，33 42 42 -> K148+019；
-    # 6A 37 03 -> K210+794，6D 37 43 -> K210+797。
-    # 最高两位的业务语义仍未知，不能并入公里数。
+    mileage_sign = (mileage_raw24 >> 23) & 1
+    mileage_direction = (mileage_raw24 >> 22) & 1
     mileage_m = mileage_raw24 & 0x3FFFFF
+    sign_text = "负" if mileage_sign else "正"
+    direction_text = "递增" if mileage_direction else "递减"
     low22_text = f"K{mileage_m // 1000}+{mileage_m % 1000:03d}"
     if mileage_raw24 == 9_999_999:
-        mileage_text = "无有效公里标（原始值 9,999,999 / 字节 7F 96 98；低位换算结果不作为实际位置）"
+        mileage_text = (
+            "无有效公里标/特殊值 9,999,999（本项目调车样本；不能将低 22 位直接显示成实际位置）"
+        )
     else:
-        mileage_text = f"{low22_text}（低 22 位米数）"
-        if mileage_flags:
-            mileage_text += f"；最高两位旗标={mileage_flags:02b}（含义未解）"
-        else:
-            mileage_text += "；最高两位=00"
+        mileage_text = f"{'-' if mileage_sign else ''}{low22_text}；公里标符号={sign_text}；变化方向={direction_text}"
 
-    speed = payload[0x19]
-    other_1a_1b = int.from_bytes(payload[0x1A:0x1C], "little")
-    weight = int.from_bytes(payload[0x1C:0x1E], "little")
-    length_tenths = int.from_bytes(payload[0x1E:0x20], "little")
+    # 表 8 序号 19：3 字节速度。表 7 规定 bit9..bit0 为实速，
+    # bit19..bit10 为预留；高 4 位在该项说明中未给出业务定义。
+    speed_raw = payload[0x19:0x1C]
+    speed_word = int.from_bytes(speed_raw, "little")
+    speed = speed_word & 0x03FF
+    speed_reserved = (speed_word >> 10) & 0x03FF
+    speed_high = (speed_word >> 20) & 0x0F
+
+    weight_raw = payload[0x1C:0x1E]
+    weight = int.from_bytes(weight_raw, "little")
+    length_raw = payload[0x1E:0x20]
+    length_tenths = int.from_bytes(length_raw, "little")
     cars = payload[0x20]
-    # 0x21 在 CRRD 公共锚点中显示为车站号，但本项目同一录音点的现场
-    # 样本中分别出现 25、28、29，不能解释为固定的物理车站编号。
-    # 0x23/0x24 在 CRRD 锚点中显示为区段号/子值，但本项目样本普遍为 0E 0E，
-    # 且尚无独立已知值佐证，暂只显示原始字节。
-    driver = int.from_bytes(payload[0x25:0x28], "little")
+
+    # 表 8 序号 23..28：车站号、车站号扩充字节、区段号（交路号）、
+    # 实际交路号、2 字节司机号、司机号扩充字节。
+    station_no = payload[0x21]
+    station_ext = payload[0x22]
+    route_no = payload[0x23]
+    actual_route_no = payload[0x24]
+    driver_raw = payload[0x25:0x27]
+    driver_no = int.from_bytes(driver_raw, "little")
+    driver_ext = payload[0x27]
 
     return {
-        "车次": f"{train_no}；前缀字节 0x{prefix_byte:02X} {prefix_display}；车次数字原始字节 {payload[0x0F:0x12].hex(' ').upper()} = {train_digits}",
-        "机车型号/机车号": f"{model_name}，型号代码 {model_code}（原始 {payload[0x12:0x14].hex(' ').upper()}）；机车号数值 {loco_no}（原始 {payload[0x14:0x16].hex(' ').upper()}，显示补零规则未强行确定）",
-        "速度": f"{speed} km/h（载荷偏移 0x19，原始 {payload[0x19]:02X}）",
-        "公里标": f"{mileage_text}；原始字节 {mileage_raw.hex(' ').upper()}，全 24 位值 {mileage_raw24}，低 22 位米数 {mileage_m}，高 2 位值 {mileage_flags:02b}",
-        "未解字段 0x08–0x0A": f"原始值：0x08={payload[0x08]:02X}，0x09={payload[0x09]:02X}，0x0A={payload[0x0A]:02X}；暂不能认定为剩余站数、总站数或事件类型。",
-        "未解字段 0x1A–0x1B": f"原始字节 {payload[0x1A:0x1C].hex(' ').upper()}；按小端数值为 {other_1a_1b}，尚不能确认是信号机编号。",
-        "总重/计长/辆数": f"总重 {weight} t（{payload[0x1C:0x1E].hex(' ').upper()}）；计长 {length_tenths / 10:.1f}（{payload[0x1E:0x20].hex(' ').upper()}）；辆数 {cars}（{payload[0x20]:02X}）",
-        "未解字段 0x21–0x24／司机号": f"0x21={payload[0x21]:02X}、0x22={payload[0x22]:02X}、0x23–0x24={payload[0x23:0x25].hex(' ').upper()}（业务含义未确认）；司机号 {driver}",
+        "协议头字段": (
+            f"完整地址 00 {addr_tail.hex(' ').upper()}；控制字 0x{control:02X}；"
+            f"命令字 0x{command:02X}；信息功能码 0x{function_code:02X}；"
+            f"信息长度 0x{info_length:02X}（{info_length} 字节）"
+        ),
+        "信号机事件": f"0x08={event_code:02X}（{event_name}）；标准表 8 定义 00 始发车、01 编组站、02 出站、03 进站、04 通过、05 预告、06 容许",
+        "信号机种类": f"0x09={signal_type:02X}（原始值；标准表 8 将其列为独立字段，详细枚举未在表中列出）",
+        "本补与客货标志": (
+            f"0x0A={class_flags:02X}；bit0={(class_flags & 1)}（{passenger_freight}），"
+            f"bit1={(class_flags >> 1) & 1}（{main_helper}）；"
+            f"bit7..2=0x{flags_other:02X}（本表未完整定义，保留原值）"
+        ),
+        "车次": (
+            f"车次种类标识符 0x0B–0x0E={train_type_id.hex(' ').upper()} "
+            f"(ASCII 显示 {train_type_text!r})；末字节显示前缀候选 {prefix_display}；"
+            f"车次数字 0x0F–0x11={train_digits_raw.hex(' ').upper()} = {train_digits}；"
+            f"组合显示 {train_no}"
+        ),
+        "机车型号/机车号": (
+            f"车型代码 0x12={model_code}（原始 {payload[0x12]:02X}，{model_name}）；"
+            f"型号扩充字节 0x13={model_ext:02X}；机车号 0x14–0x15="
+            f"{loco_no_raw.hex(' ').upper()} = {loco_no}（十进制，显示补零规则未强行确定）"
+        ),
+        "公里标": (
+            f"{mileage_text}；原始 {mileage_raw.hex(' ').upper()}；"
+            f"24 位无符号视图={mileage_raw24}；bit23 符号={mileage_sign}；"
+            f"bit22 递增标志={mileage_direction}；bit21..0 绝对米数={mileage_m}"
+        ),
+        "速度": (
+            f"{speed} km/h；3 字节原始值 0x19–0x1B={speed_raw.hex(' ').upper()}；"
+            f"24 位小端值=0x{speed_word:06X}；bit19..10 预留部分当前值={speed_reserved}；"
+            f"bit23..20 未由表 7 该字段说明=0x{speed_high:X}"
+        ),
+        "总重/计长/辆数": (
+            f"总重 0x1C–0x1D={weight_raw.hex(' ').upper()} = {weight} t；"
+            f"计长 0x1E–0x1F={length_raw.hex(' ').upper()} = {length_tenths / 10:.1f}；"
+            f"辆数 0x20={cars}（0x{cars:02X}）"
+        ),
+        "车站与交路字段": (
+            f"车站号 0x21={station_no}（0x{station_no:02X}）；"
+            f"车站号扩充字节 0x22={station_ext}（0x{station_ext:02X}）；"
+            f"区段号/交路号 0x23={route_no}（0x{route_no:02X}）；"
+            f"实际交路号 0x24={actual_route_no}（0x{actual_route_no:02X}）。"
+            "这些是编号字段，不是沿途车站清单。"
+        ),
+        "司机号": (
+            f"司机号 0x25–0x26={driver_raw.hex(' ').upper()} = {driver_no}（16 位小端）；"
+            f"司机号扩充字节 0x27={driver_ext:02X}（{driver_ext}）；"
+            "扩充字节的具体数值编码未在表 8 中详细展开。"
+        ),
     }
-
 
 def frame_to_text(frame: DecodedFrame, sample_rate: int = TARGET_RATE, source_label: str = "实时") -> str:
     relative = frame.sample_position / sample_rate
@@ -326,7 +422,7 @@ def frame_to_text(frame: DecodedFrame, sample_rate: int = TARGET_RATE, source_la
         f"原始 40 字节 TAX 载荷：{frame.payload.hex(' ').upper()}",
     ]
     lines.extend(f"{key}：{value}" for key, value in fields.items())
-    lines.append("注意：CRC 只验证帧内容校验一致；0x08–0x0A、0x1A–0x1B、0x21–0x24 仍是未解字段，按原始偏移显示，不代表站数、物理车站号、区段号或信号机编号。")
+    lines.append("注意：字段位置按 TB/T 3325-2013 表 8 对齐；0x09 信号机种类、0x0A 高位、型号/车站/司机扩充字节及速度预留位的子含义仍保留原值。CRC 通过不等于每个高位都具有已知业务语义。")
     return "\n".join(lines)
 
 
