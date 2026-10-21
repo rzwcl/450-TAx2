@@ -301,6 +301,7 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
     passenger_freight = "客" if (class_flags & 0x01) else "货"
     main_helper = "补机" if (class_flags & 0x02) else "本务机"
     number_high_bit = (class_flags >> 6) & 1
+    train_number_high_byte = payload[0x11]
     flags_other = class_flags & 0xBC
 
     # 表 8 序号 13：4 字节车次种类标识符；序号 14：24 位车次数字部分。
@@ -387,8 +388,9 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
         "本补与客货标志": (
             f"0x0A={class_flags:02X}；bit0={(class_flags & 1)}（{passenger_freight}），"
             f"bit1={(class_flags >> 1) & 1}（{main_helper}）；"
-            f"bit6={number_high_bit}（表 7 第 30 项说明：五位车次时的车次数字高位）；"
-            f"其他未定义位掩码 0x{flags_other:02X}（原值保留）"
+            f"bit6={number_high_bit}（表 7 第 30 项说明：五位车次时与车次数字高位有关）；"
+            f"0x0F–0x11 车次数值最高字节=0x{train_number_high_byte:02X}；"
+            f"两者关系需跨样本验证，不强制合并；其他未定义位掩码 0x{flags_other:02X}（原值保留）"
         ),
         "车次": (
             f"车次种类标识符 0x0B–0x0E={train_type_id.hex(' ').upper()} "
