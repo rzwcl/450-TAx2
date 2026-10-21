@@ -287,10 +287,21 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
 
     # 表 8 序号 11、12：信号机种类；本/补、客/货标志。
     signal_type = payload[0x09]
+    signal_type_code = signal_type & 0x07
+    signal_type_high = signal_type & 0xF8
+    signal_type_names = {
+        2: "出站",
+        3: "进站",
+        4: "通过",
+        5: "预告",
+        6: "容许",
+    }
+    signal_type_name = signal_type_names.get(signal_type_code, "标准表 7 未定义")
     class_flags = payload[0x0A]
     passenger_freight = "客" if (class_flags & 0x01) else "货"
     main_helper = "补机" if (class_flags & 0x02) else "本务机"
-    flags_other = class_flags & 0xFC
+    number_high_bit = (class_flags >> 6) & 1
+    flags_other = class_flags & 0xBC
 
     # 表 8 序号 13：4 字节车次种类标识符；序号 14：24 位车次数字部分。
     train_type_id = payload[0x0B:0x0F]
@@ -369,11 +380,15 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
             f"信息长度 0x{info_length:02X}（{info_length} 字节）"
         ),
         "信号机事件": f"原始 0x08={event_byte:02X}；bit3..bit0={event_code:02X}（{event_name}）；高 4 位=0x{event_high:02X}（未解）。标准表 8 定义 0 始发车、1 编组站、2 出站、3 进站、4 通过、5 预告、6 容许",
-        "信号机种类": f"0x09={signal_type:02X}（原始值；标准表 8 将其列为独立字段，详细枚举未在表中列出）",
+        "信号机种类": (
+            f"原始 0x09={signal_type:02X}；bit2..bit0={signal_type_code}（{signal_type_name}）；"
+            f"bit7..bit3=0x{signal_type_high:02X}（表 7 未定义）"
+        ),
         "本补与客货标志": (
             f"0x0A={class_flags:02X}；bit0={(class_flags & 1)}（{passenger_freight}），"
             f"bit1={(class_flags >> 1) & 1}（{main_helper}）；"
-            f"bit7..2=0x{flags_other:02X}（本表未完整定义，保留原值）"
+            f"bit6={number_high_bit}（表 7 第 30 项说明：五位车次时的车次数字高位）；"
+            f"其他未定义位掩码 0x{flags_other:02X}（原值保留）"
         ),
         "车次": (
             f"车次种类标识符 0x0B–0x0E={train_type_id.hex(' ').upper()} "
