@@ -271,7 +271,9 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
     info_length = payload[0x07]
 
     # 表 8 序号 10：TDCS 信号机类别，不是 0x22。
-    event_code = payload[0x08]
+    event_byte = payload[0x08]
+    event_code = event_byte & 0x0F
+    event_high = event_byte & 0xF0
     event_names = {
         0: "始发车",
         1: "编组站",
@@ -366,7 +368,7 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
             f"命令字 0x{command:02X}；信息功能码 0x{function_code:02X}；"
             f"信息长度 0x{info_length:02X}（{info_length} 字节）"
         ),
-        "信号机事件": f"0x08={event_code:02X}（{event_name}）；标准表 8 定义 00 始发车、01 编组站、02 出站、03 进站、04 通过、05 预告、06 容许",
+        "信号机事件": f"原始 0x08={event_byte:02X}；bit3..bit0={event_code:02X}（{event_name}）；高 4 位=0x{event_high:02X}（未解）。标准表 8 定义 0 始发车、1 编组站、2 出站、3 进站、4 通过、5 预告、6 容许",
         "信号机种类": f"0x09={signal_type:02X}（原始值；标准表 8 将其列为独立字段，详细枚举未在表中列出）",
         "本补与客货标志": (
             f"0x0A={class_flags:02X}；bit0={(class_flags & 1)}（{passenger_freight}），"
