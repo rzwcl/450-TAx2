@@ -352,11 +352,13 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
     # 实际交路号、2 字节司机号、司机号扩充字节。
     station_no = payload[0x21]
     station_ext = payload[0x22]
+    station_no_expanded = station_no | (station_ext << 8)
     route_no = payload[0x23]
     actual_route_no = payload[0x24]
     driver_raw = payload[0x25:0x27]
-    driver_no = int.from_bytes(driver_raw, "little")
+    driver_base = int.from_bytes(driver_raw, "little")
     driver_ext = payload[0x27]
+    driver_no_expanded = driver_base | (driver_ext << 16)
 
     return {
         "协议头字段": (
@@ -398,16 +400,17 @@ def decode_payload_fields(payload: bytes) -> dict[str, str]:
             f"辆数 0x20={cars}（0x{cars:02X}）"
         ),
         "车站与交路字段": (
-            f"车站号 0x21={station_no}（0x{station_no:02X}）；"
-            f"车站号扩充字节 0x22={station_ext}（0x{station_ext:02X}）；"
+            f"车站号字段 0x21={station_no:02X}；扩充字节 0x22={station_ext:02X}；"
+            f"按低字节在前组合值={station_no_expanded}（0x{station_no_expanded:04X}）；"
             f"区段号/交路号 0x23={route_no}（0x{route_no:02X}）；"
             f"实际交路号 0x24={actual_route_no}（0x{actual_route_no:02X}）。"
-            "这些是编号字段，不是沿途车站清单。"
+            "扩充后的站码仍需用对应机车的交路/站码表映射；这不是沿途车站清单。"
         ),
         "司机号": (
-            f"司机号 0x25–0x26={driver_raw.hex(' ').upper()} = {driver_no}（16 位小端）；"
-            f"司机号扩充字节 0x27={driver_ext:02X}（{driver_ext}）；"
-            "扩充字节的具体数值编码未在表 8 中详细展开。"
+            f"司机号基础字节 0x25–0x26={driver_raw.hex(' ').upper()} = {driver_base}（16 位小端）；"
+            f"扩充字节 0x27={driver_ext:02X}（{driver_ext}）；"
+            f"按低字节在前组成 24 位扩展值={driver_no_expanded}（0x{driver_no_expanded:06X}），"
+            "这一拼合方式与 CRRD 公共样本的 3 字节司机号显示相符。"
         ),
     }
 
