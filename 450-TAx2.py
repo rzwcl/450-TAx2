@@ -678,7 +678,8 @@ class FfskGui:
         self.log.insert("end", "1. 先启动你播放/接收音频的软件，并把其输出路由到虚拟音频线。\n")
         self.log.insert("end", "2. 在输入设备列表选择虚拟线的录音端（例如 CABLE Output / Line 1），不是扬声器输出端。\n")
         self.log.insert("end", "3. SoX 会把输入 PCM 实时重采样/下混到 48000 Hz、单声道；程序按 1200 baud 解析。\n")
-        self.log.insert("end", "4. 公里标目前采用 CRRD 已知样本支持的 24 位小端米数换算；异常大值会提示核查。站数和信号机编号只显示候选。\n\n")
+        self.log.insert("end", "4. 字段按 TB/T 3325-2013 表 8：0x08 为 TDCS 信号机事件，0x0A 为本/补与客/货标志，0x19–0x1B 为三字节速度。\n")
+        self.log.insert("end", "5. 0x21–0x22 为车站号及扩充字节，0x23–0x24 为区段号/交路号及实际交路号；司机号含扩充字节。预留位不强行解释。\n\n")
         self.log.configure(state="normal")
 
     def refresh_devices(self):
